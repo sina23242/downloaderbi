@@ -28,9 +28,9 @@ visit: https://example.com/page
 ## 📂 فایل‌ها کجا هستند؟
 
 - **دانلود فایل‌ها** → پوشه `downloads/`
-- **صفحات وب** → پوشه `pages/` (همراه اسکرین‌شات و تمام رسانه‌ها)
+- **صفحات وب** → پو  `pages/` (همراه اسکرین‌شات و تمام رسانه‌ها)
 
 
 تموم! 🚀
 
-https://www.youtube.com/@BiffaPlaysCitiesSkylines/videos
+visit: https://www.youtube.com/@BiffaPlaysCitiesSkylines/videos
