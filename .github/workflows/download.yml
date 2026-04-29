@@ -1,0 +1,127 @@
+name: Download from Commit and Save to Repo
+
+on:
+  push:
+    branches:
+      - "**"
+
+jobs:
+  save-file:
+    if: contains(github.event.head_commit.message, 'download:') || contains(github.event.head_commit.message, 'download-zip:')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install aria2
+        run: sudo apt-get update && sudo apt-get install -y aria2
+
+      - name: Extract URLs and download files
+        run: |
+          MSG=$(git log -1 --pretty=%B)
+          echo "Commit message: $MSG"
+
+          if echo "$MSG" | grep -qP 'download-zip:'; then
+            MODE="zip"
+            URL_LINE=$(echo "$MSG" | grep -oP 'download-zip:\s*\K.*')
+          elif echo "$MSG" | grep -qP 'download:'; then
+            MODE="normal"
+            URL_LINE=$(echo "$MSG" | grep -oP 'download:\s*\K.*')
+          else
+            echo "No download command found in commit message"
+            exit 1
+          fi
+
+          echo "Mode: $MODE"
+          mkdir -p downloads tmp_downloads
+
+          for URL in $URL_LINE; do
+            FILENAME=$(basename "$URL" | sed 's/[?#].*//')
+            echo "Downloading $URL -> $FILENAME"
+
+            aria2c \
+              --split=2 \
+              --max-connection-per-server=2 \
+              --min-split-size=90M \
+              --dir="tmp_downloads" \
+              --out="$FILENAME" \
+              "$URL" || echo "Warning: Failed to download $URL"
+          done
+
+          # Create ZIP archive if requested
+          if [ "$MODE" = "zip" ]; then
+            ARCHIVE_NAME="archive_$(date +%Y%m%d_%H%M%S).zip"
+            echo "Creating archive: $ARCHIVE_NAME"
+            cd tmp_downloads && zip -j "../downloads/$ARCHIVE_NAME" * && cd ..
+          fi
+
+          # Process downloaded files
+          for FILE in tmp_downloads/*; do
+            [ -f "$FILE" ] || continue
+            SIZE=$(stat -c%s "$FILE")
+            LIMIT=$((90 * 1024 * 1024))
+            BASENAME=$(basename "$FILE")
+
+            if [ "$MODE" = "zip" ]; then
+              # Already archived, skip individual file processing
+              continue
+            elif [ "$SIZE" -gt "$LIMIT" ]; then
+              echo "Splitting $BASENAME ($(( SIZE / 1024 / 1024 ))MB) into 90MB parts..."
+              zip -0 -s 90m "downloads/${BASENAME}.zip" -j "$FILE"
+              PARTS=$(ls downloads/${BASENAME}.zip downloads/${BASENAME}.z* 2>/dev/null | wc -l)
+              echo "Created $PARTS part(s)"
+            else
+              cp "$FILE" "downloads/$BASENAME"
+              echo "Copied $BASENAME ($(( SIZE / 1024 ))KB)"
+            fi
+          done
+
+          # Show summary
+          echo "Files in downloads/:"
+          ls -lh downloads/
+
+          # Cleanup
+          rm -rf tmp_downloads
+
+      - name: Commit and push files
+        run: |
+          BRANCH="${GITHUB_REF_NAME}"
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+
+          # Collect all new/modified files
+          mapfile -t ALL_FILES < <(git ls-files --others --modified --exclude-standard downloads/ 2>/dev/null)
+
+          TOTAL=${#ALL_FILES[@]}
+          echo "Total files to push: $TOTAL"
+
+          if [ "$TOTAL" -eq 0 ]; then
+            echo "No files to commit"
+            exit 0
+          fi
+
+          BATCH_SIZE=5
+          BATCH_NUM=0
+
+          for (( i=0; i<TOTAL; i+=BATCH_SIZE )); do
+            BATCH_NUM=$(( BATCH_NUM + 1 ))
+            BATCH=("${ALL_FILES[@]:i:BATCH_SIZE}")
+            END=$(( i + ${#BATCH[@]} ))
+
+            echo "Pushing batch $BATCH_NUM: files $((i+1))-$END of $TOTAL"
+
+            git add "${BATCH[@]}"
+            git commit -m "Add downloaded files - batch $BATCH_NUM [skip ci]"
+
+            git pull --rebase origin "$BRANCH"
+            git push origin HEAD:"$BRANCH"
+
+            echo "Batch $BATCH_NUM pushed successfully"
+          done
+
+          echo "All $TOTAL files pushed in $BATCH_NUM batch(es)"
